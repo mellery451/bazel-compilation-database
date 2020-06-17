@@ -24,7 +24,6 @@ set -e
 #set -x
 
 source_dir=0
-b_cmd="bazel"
 
 usage() {
   printf "usage: %s flags\nwhere flags can be:\n" "${BASH_SOURCE[0]}"
@@ -35,7 +34,6 @@ usage() {
 while getopts "sdh" opt; do
   case "${opt}" in
     "s") source_dir=1 ;;
-    "d") b_cmd="dazel" ;;
     "h") usage; exit 0;;
     *) >&2 echo "invalid option ${opt}"; exit 1;;
   esac
@@ -84,13 +82,13 @@ function get_realpath() {
 }
 
 readonly ASPECTS_DIR="$(dirname "$(get_realpath "${BASH_SOURCE[0]}")")"
-readonly OUTPUT_GROUPS="compdb_files"
-#readonly OUTPUT_GROUPS="compdb_files,compilation_prerequisites_INTERNAL_"
+#readonly OUTPUT_GROUPS="compdb_files"
+readonly OUTPUT_GROUPS="compdb_files,compilation_prerequisites_INTERNAL_"
 readonly BAZEL="${BAZEL_COMPDB_BAZEL_PATH:-bazel}"
 
-readonly WORKSPACE="$(${b_cmd} info workspace 2>&1 | tail -1)"
-readonly EXEC_ROOT="$(${b_cmd} info execution_root 2>&1 | tail -1)"
-readonly BAZEL_BIN="$(${b_cmd} info bazel-bin 2>&1 | tail -1)"
+readonly WORKSPACE="$(${BAZEL} info workspace 2>&1 | tail -1)"
+readonly EXEC_ROOT="$(${BAZEL} info execution_root 2>&1 | tail -1)"
+readonly BAZEL_BIN="$(${BAZEL} info bazel-bin 2>&1 | tail -1)"
 readonly BAZEL_BIN_TRIM="$(echo ${BAZEL_BIN} | sed -E "s|$EXEC_ROOT/||")"
 echo "BAZEL BIN:  $BAZEL_BIN_TRIM"
 readonly COMPDB_FILE="${WORKSPACE}/compile_commands.json"
@@ -98,7 +96,7 @@ readonly COMPDB_FILE="${WORKSPACE}/compile_commands.json"
 TARGETS=()
 while read -r target ; do
     TARGETS+=(${target})
-done < <( ${b_cmd} \
+done < <( ${BAZEL} \
     query --noshow_progress --noshow_loading_progress \
     'kind("cc_(library|binary|test|inc_library|proto_library)", //...) union kind("objc_(library|binary|test)", //...)' 2>&1)
 echo "NUM ELEMS: ${#TARGETS[*]}"
@@ -109,7 +107,7 @@ if [[ -e "${EXEC_ROOT}" ]]; then
 fi
 
 # shellcheck disable=SC2046
-${b_cmd} build \
+${BAZEL} build \
   "--override_repository=bazel_compdb=${ASPECTS_DIR}" \
   "--aspects=@bazel_compdb//:aspects.bzl%compilation_database_aspect" \
   "--noshow_progress" \
@@ -145,7 +143,7 @@ else
 fi
 sed -i.bak -e "s|-isysroot __BAZEL_XCODE_SDKROOT__||" "${COMPDB_FILE}"  # Replace -isysroot __BAZEL_XCODE_SDKROOT__ marker
 
-if [[ $b_cmd == "dazel" ]] ; then
+if [[ $BAZEL == "dazel" ]] ; then
   sed -i.bak -E -e "s|bazel-out/.+/gcc_nvcc_wrapper|g++|g" "${COMPDB_FILE}"  # Replace gcc_nvcc with compiler
   TO_ELIM=(-fno-canonical-system-headers
            -Wno-free-nonheap-object
