@@ -85,6 +85,7 @@ function get_realpath() {
 
 readonly ASPECTS_DIR="$(dirname "$(get_realpath "${BASH_SOURCE[0]}")")"
 readonly OUTPUT_GROUPS="compdb_files"
+#readonly OUTPUT_GROUPS="compdb_files,compilation_prerequisites_INTERNAL_"
 readonly BAZEL="${BAZEL_COMPDB_BAZEL_PATH:-bazel}"
 
 readonly WORKSPACE="$(${b_cmd} info workspace 2>&1 | tail -1)"
@@ -115,7 +116,8 @@ ${b_cmd} build \
   "--noshow_loading_progress" \
   "--output_groups=${OUTPUT_GROUPS}" \
   "$@" > /dev/null
-#  "$@" "${TARGETS[@]}" > /dev/null
+
+# "$@" "${TARGETS[@]}" > /dev/null
 
 echo "[" > "${COMPDB_FILE}"
 while read -r found ; do
@@ -143,8 +145,6 @@ else
 fi
 sed -i.bak -e "s|-isysroot __BAZEL_XCODE_SDKROOT__||" "${COMPDB_FILE}"  # Replace -isysroot __BAZEL_XCODE_SDKROOT__ marker
 
-sed -i.bak -e "s|-isysroot __BAZEL_XCODE_SDKROOT__||" "${COMPDB_FILE}"  # Replace -isysroot __BAZEL_XCODE_SDKROOT__ marker
-
 if [[ $b_cmd == "dazel" ]] ; then
   sed -i.bak -E -e "s|bazel-out/.+/gcc_nvcc_wrapper|g++|g" "${COMPDB_FILE}"  # Replace gcc_nvcc with compiler
   TO_ELIM=(-fno-canonical-system-headers
@@ -160,25 +160,33 @@ if [[ $b_cmd == "dazel" ]] ; then
     sed -i.bak -E -e "s|$elim||g" "${COMPDB_FILE}"
   done
 
+  #declare -A genroots=()
   # extract a comprehensive list of include paths
   # in the DB and then munge the ones that are invalid
   while read -r inc ; do
     inc=$(echo "${inc}" | sed -E -e "s|^[[:space:]]+||" | sed -E -e "s|[[:space:]]+$||")
     newinc=${inc}
+    root=$(echo "${inc}" | sed -E -e 's|^(bazel-out/k8-[^/]+/bin/).+|\1|')
+    #genroots[$root]=1
     newinc=$(echo "${newinc}" | sed -E -e "s|^bazel-out/k8-[^/]+/bin/||")
     if echo "${newinc}" | grep -q -E "/_virtual_includes/" ; then
+      saved="${newinc}"
       newinc=$(echo "${newinc}" | sed -E -e "s|/_virtual_includes/.+||")
       if [[ -d "${newinc}/include" ]]; then
         moarinc="${newinc}/include"
         if [[ -d "${newinc}/src" ]]; then
-          moarinc+=" -isystem ${newinc}/src"
+          moarinc+=" -I ${newinc}/src"
         fi
         newinc="${moarinc}"
       elif [[ -d "${newinc}/src" ]]; then
         newinc+="/src"
       fi
+      # check the unmodified (virtual path) - if it actually
+      # exists, add it back in
+      if [[ -d ${saved} ]]; then
+        newinc+=" -I ${saved}"
+      fi
     fi
-
     # custom hacks for some "installed" 3rdparty
     if echo "${newinc}" | grep -q "/gmock/install/" ; then
       newinc=$(echo "${newinc}" | sed -E -e "s|/gmock/install/|/googlemock/|")
@@ -216,27 +224,12 @@ if [[ $b_cmd == "dazel" ]] ; then
     | sed -E -e 's/(-I|-isystem|-iquote) (.+)/\2/g' \
     | sort | uniq)
 
-  gendir="$PWD/build/_gen"
-  add_includes=""
-  #  while read -r inc; do
-  #      add_includes+=" -isystem $inc"
-  #  done < <(find 3rdparty/src 3rdparty/shared -name include)
-  add_includes+=" -I src"
-  add_includes+=" -isystem /usr/local/cuda/include"
-  add_includes+=" -isystem $gendir"
-  while read -r inc ; do
-    add_includes+=" -I $inc"
-  done < <(ls -d src/dwshared/*/)
-  #  sed -i.bak -E -e "s|-isystem 3rdparty/[^[:space:]]+/install/[^[:space:]]+ ||g" "${COMPDB_FILE}"
-  sed -i.bak -E -e "s|(.*) -isystem |\\1 $add_includes -isystem |" "${COMPDB_FILE}"
+  add_includes=" -I src"
+  add_includes=" -I ${BAZEL_BIN}/src"
 
-  # TODO -- these all need to come from the actual build/config (generated headers)
-  mkdir -p "$gendir/dw/core"
-  echo "#define DW_RUNTIME_CHECKS() 1" > $gendir/dw/core/ConfigChecks.h
-  echo -e "#ifndef DW_CORE_CONFIG_H__\\n#define LINUX\\n#define DW_USE_NVMEDIA_X86\\n#define DW_USE_NVSIPL\\n#define DW_USE_OPENDDS\\n#endif\\n" > $gendir/dw/core/Config.h
-  echo -e "#ifndef DW_CORE_CONFIG3RDPARTY_HPP__\\n#define DW_USE_OPENCV\\n#define DW_USE_HERE\\n#define TRT_VERSION_DECIMAL 6000011\\n#define NVDLA_VERSION_DECIMAL 10400\\n#define NVMEDIA_VERSION_DECIMAL 14\\n#endif\\n" > $gendir/dw/core/Config3rdParty.hpp
-  echo -e "#ifndef DW_CORE_VERSIONCURRENT_H_\\n#include <dw/core/Version.h>\\n#define DW_VERSION dwVersion{3,0,-1,\"nil\",\"-exp\"}\\n#endif\\n" > $gendir/dw/core/VersionCurrent.h
-  echo -e "#ifndef DW_CORE_VERSION_EXTRA_HPP__\\n#define DW_SDK_VERSION_GIT_DESCRIPTION \"none\"\\n#define DW_SDK_BUILD_COMPILER_STRING \"GNU\"\\n#define DW_SDK_BUILD_TYPE \"Debug\"\\n#endif\\n" > $gendir/dw/core/VersionExtra.hpp
+  # TODO: figure out how to get the cuda sdk ctually used by compilation
+  add_includes+=" -isystem /usr/local/cuda/include"
+  sed -i.bak -E -e "s|(.*) -isystem |\\1 $add_includes -isystem |" "${COMPDB_FILE}"
 fi
 
 # Clean up backup file left behind by sed.
