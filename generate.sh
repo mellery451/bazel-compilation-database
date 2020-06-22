@@ -145,7 +145,11 @@ sed -i.bak -e "s|-isysroot __BAZEL_XCODE_SDKROOT__||" "${COMPDB_FILE}"  # Replac
 sed -i.bak -e "s|-iquote|-I|g" "${COMPDB_FILE}"  # Replace -iquote with -I
 
 if [[ $BAZEL == "dazel" ]] ; then
-  sed -i.bak -E -e "s|bazel-out/.+/gcc_nvcc_wrapper|g++|g" "${COMPDB_FILE}"  # Replace gcc_nvcc with compiler
+  sedscript=$(mktemp)
+  compnew=$(mktemp)
+  echo "s|bazel-out/.+/gcc_nvcc_wrapper|g++|g" >> "${sedscript}"
+
+  # warnings clang doesn't like:
   TO_ELIM=(-fno-canonical-system-headers
            -Wno-free-nonheap-object
            -Wfree-nonheap-object
@@ -156,18 +160,21 @@ if [[ $BAZEL == "dazel" ]] ; then
            "-nvcc_options [^[:space:]]+"
            "${BAZEL_BIN_TRIM}/")
   for elim in  "${TO_ELIM[@]}" ; do
-    sed -i.bak -E -e "s|$elim||g" "${COMPDB_FILE}"
+    echo "s|$elim||g" >> "${sedscript}"
   done
 
-  #declare -A genroots=()
-  # extract a comprehensive list of include paths
+  # run these substitutions...
+  echo "performing $(wc -l ${sedscript}) substitutions..."
+  time (cat "${COMPDB_FILE}" | parallel --lb --pipe "sed -E -f '${sedscript}'" > "${compnew}")
+  mv "${compnew}" "${COMPDB_FILE}"
+  truncate -s 0 "${sedscript}"
+
+  # iterate over list of include paths
   # in the DB and then munge the ones that are invalid
-  sedscript=$(mktemp)
   while read -r inc ; do
     inc=$(echo "${inc}" | sed -E -e "s|^[[:space:]]+||" | sed -E -e "s|[[:space:]]+$||")
     newinc=${inc}
     root=$(echo "${inc}" | sed -E -e 's|^(bazel-out/k8-[^/]+/bin/).+|\1|')
-    #genroots[$root]=1
     newinc=$(echo "${newinc}" | sed -E -e "s|^bazel-out/k8-[^/]+/bin/||")
     if echo "${newinc}" | grep -q -E "/_virtual_includes/" ; then
       saved="${newinc}"
@@ -206,7 +213,6 @@ if [[ $BAZEL == "dazel" ]] ; then
     #echo -e "   >>> turned [$inc]\\n    >>> into [$newinc]"
     if [[ "$newinc" != "$inc" ]]; then
       echo "s|[[:space:]=]+${inc}[[:space:]=]+| ${newinc} |g" >> "${sedscript}"
-      #sed -i.bak -E -e "s|[[:space:]=]+${inc}[[:space:]=]+| ${newinc} |g" "${COMPDB_FILE}"
     fi
   done < <( \
     sed -E -e 's/(-I|-isystem)[[:space:]=]+([^[:space:]]+)/\n\1 \2\n/g' "${COMPDB_FILE}" \
@@ -214,12 +220,18 @@ if [[ $BAZEL == "dazel" ]] ; then
     | sed -E -e 's/(-I|-isystem) (.+)/\2/g' \
     | sort | uniq)
   ## ^^^ this matching has to be revisited if we have any paths with spaces
+
   echo "performing $(wc -l ${sedscript}) substitutions..."
-  #time sed -i.bak -E -f "${sedscript}" "${COMPDB_FILE}"
-  compnew=$(mktemp)
   time (cat "${COMPDB_FILE}" | parallel --lb --pipe "sed -E -f '${sedscript}'" > "${compnew}")
   mv "${compnew}" "${COMPDB_FILE}"
   rm ${sedscript}
+
+  # force extra includes:
+  add_includes=" -I src"
+  add_includes+=" -I ${BAZEL_BIN}/src"
+  # TODO: figure out how to get the cuda sdk ctually used by compilation
+  add_includes+=" -isystem /usr/local/cuda/include"
+  sed -i.bak -E -e "s|(.*) -isystem |\\1 $add_includes -isystem |" "${COMPDB_FILE}"
 
   while read -r inc ; do
     if [[ ! -d $inc ]]; then
@@ -231,12 +243,6 @@ if [[ $BAZEL == "dazel" ]] ; then
     | sed -E -e 's/(-I|-isystem) (.+)/\2/g' \
     | sort | uniq)
 
-  add_includes=" -I src"
-  add_includes=" -I ${BAZEL_BIN}/src"
-
-  # TODO: figure out how to get the cuda sdk ctually used by compilation
-  add_includes+=" -isystem /usr/local/cuda/include"
-  sed -i.bak -E -e "s|(.*) -isystem |\\1 $add_includes -isystem |" "${COMPDB_FILE}"
 fi
 
 # Clean up backup file left behind by sed.
