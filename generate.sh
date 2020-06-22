@@ -142,6 +142,7 @@ else
   ln -f -s "${WORKSPACE}/${COMPDB_FILE}" "${EXEC_ROOT}/"
 fi
 sed -i.bak -e "s|-isysroot __BAZEL_XCODE_SDKROOT__||" "${COMPDB_FILE}"  # Replace -isysroot __BAZEL_XCODE_SDKROOT__ marker
+sed -i.bak -e "s|-iquote|-I|g" "${COMPDB_FILE}"  # Replace -iquote with -I
 
 if [[ $BAZEL == "dazel" ]] ; then
   sed -i.bak -E -e "s|bazel-out/.+/gcc_nvcc_wrapper|g++|g" "${COMPDB_FILE}"  # Replace gcc_nvcc with compiler
@@ -161,6 +162,7 @@ if [[ $BAZEL == "dazel" ]] ; then
   #declare -A genroots=()
   # extract a comprehensive list of include paths
   # in the DB and then munge the ones that are invalid
+  sedscript=$(mktemp)
   while read -r inc ; do
     inc=$(echo "${inc}" | sed -E -e "s|^[[:space:]]+||" | sed -E -e "s|[[:space:]]+$||")
     newinc=${inc}
@@ -203,23 +205,30 @@ if [[ $BAZEL == "dazel" ]] ; then
     fi
     #echo -e "   >>> turned [$inc]\\n    >>> into [$newinc]"
     if [[ "$newinc" != "$inc" ]]; then
-      sed -i.bak -E -e "s|[[:space:]=]+${inc}[[:space:]=]+| ${newinc} |g" "${COMPDB_FILE}"
+      echo "s|[[:space:]=]+${inc}[[:space:]=]+| ${newinc} |g" >> "${sedscript}"
+      #sed -i.bak -E -e "s|[[:space:]=]+${inc}[[:space:]=]+| ${newinc} |g" "${COMPDB_FILE}"
     fi
   done < <( \
-    sed -E -e 's/(-I|-isystem|-iquote)[[:space:]=]+([^[:space:]]+)/\n\1 \2\n/g' "${COMPDB_FILE}" \
-    | grep -E '(-I|-isystem|-iquote) ' \
-    | sed -E -e 's/(-I|-isystem|-iquote) (.+)/\2/g' \
+    sed -E -e 's/(-I|-isystem)[[:space:]=]+([^[:space:]]+)/\n\1 \2\n/g' "${COMPDB_FILE}" \
+    | grep -E '(-I|-isystem) ' \
+    | sed -E -e 's/(-I|-isystem) (.+)/\2/g' \
     | sort | uniq)
   ## ^^^ this matching has to be revisited if we have any paths with spaces
+  echo "performing $(wc -l ${sedscript}) substitutions..."
+  #time sed -i.bak -E -f "${sedscript}" "${COMPDB_FILE}"
+  compnew=$(mktemp)
+  time (cat "${COMPDB_FILE}" | parallel --lb --pipe "sed -E -f '${sedscript}'" > "${compnew}")
+  mv "${compnew}" "${COMPDB_FILE}"
+  rm ${sedscript}
 
   while read -r inc ; do
     if [[ ! -d $inc ]]; then
       echo "WARN: might need a manual substition for $inc (which does not exist)"
     fi
   done < <( \
-    sed -E -e 's/(-I|-isystem|-iquote)[[:space:]=]+([^[:space:]]+)/\n\1 \2\n/g' "${COMPDB_FILE}" \
-    | grep -E '(-I|-isystem|-iquote) ' \
-    | sed -E -e 's/(-I|-isystem|-iquote) (.+)/\2/g' \
+    sed -E -e 's/(-I|-isystem)[[:space:]=]+([^[:space:]]+)/\n\1 \2\n/g' "${COMPDB_FILE}" \
+    | grep -E '(-I|-isystem) ' \
+    | sed -E -e 's/(-I|-isystem) (.+)/\2/g' \
     | sort | uniq)
 
   add_includes=" -I src"
